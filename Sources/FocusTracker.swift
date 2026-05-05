@@ -59,6 +59,30 @@ final class FocusTracker {
         }
     }
 
+    private func isUserWindow(_ window: AXUIElement) -> Bool {
+        // Subrole must be a normal app window, not a dialog/drawer/floating/popover/etc.
+        var subroleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(window, kAXSubroleAttribute as CFString, &subroleRef)
+        let subrole = (subroleRef as? String) ?? ""
+        guard subrole == kAXStandardWindowSubrole as String else { return false }
+
+        // Real windows the user interacts with normally have a non-empty title.
+        var titleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+        let title = (titleRef as? String) ?? ""
+        if title.isEmpty { return false }
+
+        // Skip windows with zero or near-zero size (drag previews, hidden frames).
+        var sizeRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef)
+        if let val = sizeRef {
+            var size = CGSize.zero
+            AXValueGetValue(val as! AXValue, .cgSize, &size)
+            if size.width < 50 || size.height < 50 { return false }
+        }
+        return true
+    }
+
     private func windowTitle(_ window: AXUIElement) -> String {
         var ref: CFTypeRef?
         AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &ref)
@@ -123,6 +147,15 @@ final class FocusTracker {
         let res = AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &winRef)
         guard res == .success, let win = winRef else { return }
         let window = win as! AXUIElement
+
+        // Filter out transient/ghost windows that Chrome (and others) briefly focus during
+        // operations like split-tab — drag previews, popups, drawers, sheets. Tracking them
+        // pollutes our state because they aren't windows the user actually wants restored.
+        if !isUserWindow(window) {
+            log("    recordFocus skipped for \(appName(pid)) — non-standard window")
+            return
+        }
+
         guard let displayID = displayID(for: window) else { return }
 
         // The same window can only live on one display. Drop any stale references
@@ -149,7 +182,6 @@ final class FocusTracker {
 
     func activateLastWindow(on displayID: CGDirectDisplayID) {
         log("==> cross to display \(displayID); known entries: \(lastFocusedByDisplay.map { "\($0.key)=>\(appName($0.value.pid)):'\(windowTitle($0.value.window))'" }.joined(separator: ", "))")
-        var activatedPid: pid_t? = nil
         if let entry = validatedEntry(for: displayID) {
             let alreadyActive: Bool = {
                 guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier == entry.pid else { return false }
@@ -159,59 +191,17 @@ final class FocusTracker {
             log("    entry=\(appName(entry.pid)):'\(windowTitle(entry.window))' alreadyActive=\(alreadyActive)")
             if !alreadyActive {
                 bringWindowForward(pid: entry.pid, window: entry.window)
-                activatedPid = entry.pid
             }
         } else if let pid = activateTopmostWindow(on: displayID) {
             log("    no entry; topmost-fallback activated \(appName(pid))")
-            activatedPid = pid
         } else {
             log("    no entry and no topmost on display \(displayID)")
-        }
-
-        // Activating an app raises ALL of its windows globally. If that app has windows
-        // on other displays, those windows will cover whatever was frontmost there. Only
-        // in that case do we need to re-raise the other displays' recorded windows.
-        if let pid = activatedPid {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-                self?.restoreOtherDisplays(except: displayID, displacedBy: pid)
-            }
-        }
-    }
-
-    private func restoreOtherDisplays(except activeDisplay: CGDirectDisplayID, displacedBy activatedPid: pid_t) {
-        log("    restoreOtherDisplays except=\(activeDisplay) activated=\(appName(activatedPid))")
-        let otherIDs = lastFocusedByDisplay.keys.filter { $0 != activeDisplay }
-        for otherID in otherIDs {
-            guard let recorded = lastFocusedByDisplay[otherID] else {
-                log("      [\(otherID)] no entry; skip"); continue
-            }
-            if recorded.pid == activatedPid {
-                log("      [\(otherID)] same-app (\(appName(recorded.pid))); skip")
-                continue
-            }
-            let hasWin = appHasWindow(pid: activatedPid, on: otherID)
-            if !hasWin {
-                log("      [\(otherID)] activated app has no window here; skip")
-                continue
-            }
-            if let entry = validatedEntry(for: otherID) {
-                log("      [\(otherID)] raising \(appName(entry.pid)):'\(windowTitle(entry.window))'")
-                suppressUntil[entry.pid] = Date().addingTimeInterval(suppressionDuration)
-                AXUIElementPerformAction(entry.window, kAXRaiseAction as CFString)
-            } else {
-                log("      [\(otherID)] entry stale after validation; dropped")
-            }
         }
     }
 
     private func bringWindowForward(pid: pid_t, window: AXUIElement) {
         log("    bringWindowForward \(appName(pid)):'\(windowTitle(window))'")
         suppressUntil[pid] = Date().addingTimeInterval(suppressionDuration)
-        // Apps with multiple windows (Chrome, VS Code/Electron, etc.) often keep their own
-        // "main window" state and ignore a bare kAXRaiseAction — activate() then makes the
-        // app's previously-remembered main window key, not the one we want. We set
-        // kAXFocusedWindow + kAXMainWindow on the app element AND kAXMain + kAXFocused on
-        // the window itself so the app has no ambiguity about which window we mean.
         let appEl = AXUIElementCreateApplication(pid)
         AXUIElementSetAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, window)
         AXUIElementSetAttributeValue(appEl, kAXMainWindowAttribute as CFString, window)
@@ -221,23 +211,7 @@ final class FocusTracker {
         NSRunningApplication(processIdentifier: pid)?.activate()
     }
 
-    private func appHasWindow(pid: pid_t, on displayID: CGDirectDisplayID) -> Bool {
-        let bounds = CGDisplayBounds(displayID)
-        let infoList = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
-        for w in infoList {
-            guard let layer = w[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
-            guard let wPid = w[kCGWindowOwnerPID as String] as? pid_t, wPid == pid else { continue }
-            guard let bDict = w[kCGWindowBounds as String] as? [String: CGFloat] else { continue }
-            let rect = CGRect(x: bDict["X"] ?? 0, y: bDict["Y"] ?? 0,
-                              width: bDict["Width"] ?? 0, height: bDict["Height"] ?? 0)
-            if bounds.contains(CGPoint(x: rect.midX, y: rect.midY)) {
-                return true
-            }
-        }
-        return false
-    }
-
-    @discardableResult
+@discardableResult
     private func activateTopmostWindow(on displayID: CGDirectDisplayID) -> pid_t? {
         let bounds = CGDisplayBounds(displayID)
         let infoList = (CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]) ?? []
