@@ -60,19 +60,16 @@ final class FocusTracker {
     }
 
     private func isUserWindow(_ window: AXUIElement) -> Bool {
-        // Subrole must be a normal app window, not a dialog/drawer/floating/popover/etc.
-        var subroleRef: CFTypeRef?
-        AXUIElementCopyAttributeValue(window, kAXSubroleAttribute as CFString, &subroleRef)
-        let subrole = (subroleRef as? String) ?? ""
-        guard subrole == kAXStandardWindowSubrole as String else { return false }
-
-        // Real windows the user interacts with normally have a non-empty title.
+        // Allow standard windows, dialogs, and similar interactive popups. We used to
+        // require kAXStandardWindowSubrole, which dropped real save/confirm dialogs the
+        // user genuinely focuses. Keep the size + title checks below — those still filter
+        // out transient ghosts (Chrome's split-tab drag previews etc.) without rejecting
+        // legitimate popups.
         var titleRef: CFTypeRef?
         AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
         let title = (titleRef as? String) ?? ""
         if title.isEmpty { return false }
 
-        // Skip windows with zero or near-zero size (drag previews, hidden frames).
         var sizeRef: CFTypeRef?
         AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef)
         if let val = sizeRef {
@@ -224,19 +221,27 @@ final class FocusTracker {
     private func bringWindowForward(pid: pid_t, window: AXUIElement) {
         suppressUntil[pid] = Date().addingTimeInterval(suppressionDuration)
         let appEl = AXUIElementCreateApplication(pid)
-        // First raise nudges the app to start re-evaluating which window is on top.
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-        // Setters happen between raises so they apply while the app is mid-evaluation.
+        applyMainWindowSetters(appEl: appEl, window: window)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            NSRunningApplication(processIdentifier: pid)?.activate()
+            // Post-active correction: VS Code / Electron apps ignore AX setters during their
+            // own restore-state logic that runs as part of activate(). Once they finish that,
+            // they accept within-active-app window switches. Re-assert the target window
+            // 150ms after activate so VS Code stops keying its previously-remembered main.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                self?.applyMainWindowSetters(appEl: appEl, window: window)
+                AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            }
+        }
+    }
+
+    private func applyMainWindowSetters(appEl: AXUIElement, window: AXUIElement) {
         AXUIElementSetAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, window)
         AXUIElementSetAttributeValue(appEl, kAXMainWindowAttribute as CFString, window)
         AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        // Second raise after a short delay, then activate. The second raise gets honored
-        // by some apps that ignored the first while their own state was still in flight.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            NSRunningApplication(processIdentifier: pid)?.activate()
-        }
     }
 
 @discardableResult
