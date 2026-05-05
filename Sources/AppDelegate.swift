@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startCore() {
+        FileHandle.standardError.write(Data("[mma] startCore: trust=\(AXIsProcessTrusted())\n".utf8))
         focusTracker = FocusTracker()
         focusTracker.start()
 
@@ -48,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.title = "🖥"
-            button.toolTip = "Mouse Monitor Activate"
+            button.toolTip = "AutoFocusMonitor"
         }
         let menu = NSMenu()
         let toggle = NSMenuItem(title: "Enabled", action: #selector(toggleEnabled), keyEquivalent: "")

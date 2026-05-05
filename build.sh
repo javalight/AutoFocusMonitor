@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-NAME="MouseMonitorActivate"
+NAME="AutoFocusMonitor"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 APP="$ROOT/$NAME.app"
 MACOS="$APP/Contents/MacOS"

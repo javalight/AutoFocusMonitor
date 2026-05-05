@@ -5,13 +5,13 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleExecutable</key>
-    <string>MouseMonitorActivate</string>
+    <string>AutoFocusMonitor</string>
     <key>CFBundleIdentifier</key>
-    <string>com.local.mousemonitoractivate</string>
+    <string>com.local.autofocusmonitor</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>MouseMonitorActivate</string>
+    <string>AutoFocusMonitor</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
