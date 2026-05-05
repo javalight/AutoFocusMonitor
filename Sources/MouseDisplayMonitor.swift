@@ -24,6 +24,11 @@ final class MouseDisplayMonitor {
     }
 
     private func tick() {
+        // Don't fire cross events while any mouse button is held — the user is dragging
+        // a window or selecting across displays, and an activation would steal focus and
+        // interrupt the drag. Resumes naturally on button release at the next tick.
+        if NSEvent.pressedMouseButtons != 0 { return }
+
         guard let id = currentMouseDisplayID() else { return }
         if id != lastDisplayID && lastDisplayID != 0 {
             lastDisplayID = id
