@@ -139,7 +139,6 @@ final class FocusTracker {
 
     func recordFocus(for pid: pid_t) {
         if let until = suppressUntil[pid], Date() < until {
-            log("    recordFocus suppressed for \(appName(pid))")
             return
         }
         let appEl = AXUIElementCreateApplication(pid)
@@ -152,7 +151,6 @@ final class FocusTracker {
         // operations like split-tab — drag previews, popups, drawers, sheets. Tracking them
         // pollutes our state because they aren't windows the user actually wants restored.
         if !isUserWindow(window) {
-            log("    recordFocus skipped for \(appName(pid)) — non-standard window")
             return
         }
 
@@ -181,7 +179,6 @@ final class FocusTracker {
     }
 
     func activateLastWindow(on displayID: CGDirectDisplayID) {
-        log("==> cross to display \(displayID); known entries: \(lastFocusedByDisplay.map { "\($0.key)=>\(appName($0.value.pid)):'\(windowTitle($0.value.window))'" }.joined(separator: ", "))")
         if let entry = validatedEntry(for: displayID) {
             // The recorded AXUIElement can drift over time (apps recreate windows internally,
             // references go stale). Re-discover the actual window of this pid currently on
@@ -193,17 +190,13 @@ final class FocusTracker {
                 return CFEqual(frontWin, liveWindow)
             }()
             if !CFEqual(liveWindow, entry.window) {
-                log("    re-resolved window from '\(windowTitle(entry.window))' to '\(windowTitle(liveWindow))'")
                 lastFocusedByDisplay[displayID] = Entry(pid: entry.pid, window: liveWindow)
             }
-            log("    entry=\(appName(entry.pid)):'\(windowTitle(liveWindow))' alreadyActive=\(alreadyActive)")
             if !alreadyActive {
                 bringWindowForward(pid: entry.pid, window: liveWindow)
             }
-        } else if let pid = activateTopmostWindow(on: displayID) {
-            log("    no entry; topmost-fallback activated \(appName(pid))")
         } else {
-            log("    no entry and no topmost on display \(displayID)")
+            activateTopmostWindow(on: displayID)
         }
     }
 
@@ -229,15 +222,21 @@ final class FocusTracker {
     }
 
     private func bringWindowForward(pid: pid_t, window: AXUIElement) {
-        log("    bringWindowForward \(appName(pid)):'\(windowTitle(window))'")
         suppressUntil[pid] = Date().addingTimeInterval(suppressionDuration)
         let appEl = AXUIElementCreateApplication(pid)
+        // First raise nudges the app to start re-evaluating which window is on top.
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        // Setters happen between raises so they apply while the app is mid-evaluation.
         AXUIElementSetAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, window)
         AXUIElementSetAttributeValue(appEl, kAXMainWindowAttribute as CFString, window)
         AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-        NSRunningApplication(processIdentifier: pid)?.activate()
+        // Second raise after a short delay, then activate. The second raise gets honored
+        // by some apps that ignored the first while their own state was still in flight.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            NSRunningApplication(processIdentifier: pid)?.activate()
+        }
     }
 
 @discardableResult
