@@ -226,12 +226,19 @@ final class FocusTracker {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
             AXUIElementPerformAction(window, kAXRaiseAction as CFString)
             NSRunningApplication(processIdentifier: pid)?.activate()
-            // Post-active correction: VS Code / Electron apps ignore AX setters during their
-            // own restore-state logic that runs as part of activate(). Once they finish that,
-            // they accept within-active-app window switches. Re-assert the target window
-            // 150ms after activate so VS Code stops keying its previously-remembered main.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                self?.applyMainWindowSetters(appEl: appEl, window: window)
+            // Immediate post-active correction for apps that ignore setters during their
+            // own activate-time logic (VS Code / Electron). When this lands fast enough,
+            // there's no visible wrong-window flash.
+            self?.applyMainWindowSetters(appEl: appEl, window: window)
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            // Conditional retry: only fire if VS Code's restore was still in flight and
+            // ate our immediate correction. This way the no-flicker path stays no-flicker
+            // and we only pay the brief flash when the race goes the other way.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
+                guard let self = self,
+                      let actual = self.focusedWindow(of: pid),
+                      !CFEqual(actual, window) else { return }
+                self.applyMainWindowSetters(appEl: appEl, window: window)
                 AXUIElementPerformAction(window, kAXRaiseAction as CFString)
             }
         }
