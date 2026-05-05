@@ -183,20 +183,49 @@ final class FocusTracker {
     func activateLastWindow(on displayID: CGDirectDisplayID) {
         log("==> cross to display \(displayID); known entries: \(lastFocusedByDisplay.map { "\($0.key)=>\(appName($0.value.pid)):'\(windowTitle($0.value.window))'" }.joined(separator: ", "))")
         if let entry = validatedEntry(for: displayID) {
+            // The recorded AXUIElement can drift over time (apps recreate windows internally,
+            // references go stale). Re-discover the actual window of this pid currently on
+            // the target display so we're aiming at the live window, not a memory of one.
+            let liveWindow = resolveLiveWindow(pid: entry.pid, on: displayID, hint: entry.window)
             let alreadyActive: Bool = {
                 guard let front = NSWorkspace.shared.frontmostApplication, front.processIdentifier == entry.pid else { return false }
                 guard let frontWin = focusedWindow(of: entry.pid) else { return false }
-                return CFEqual(frontWin, entry.window)
+                return CFEqual(frontWin, liveWindow)
             }()
-            log("    entry=\(appName(entry.pid)):'\(windowTitle(entry.window))' alreadyActive=\(alreadyActive)")
+            if !CFEqual(liveWindow, entry.window) {
+                log("    re-resolved window from '\(windowTitle(entry.window))' to '\(windowTitle(liveWindow))'")
+                lastFocusedByDisplay[displayID] = Entry(pid: entry.pid, window: liveWindow)
+            }
+            log("    entry=\(appName(entry.pid)):'\(windowTitle(liveWindow))' alreadyActive=\(alreadyActive)")
             if !alreadyActive {
-                bringWindowForward(pid: entry.pid, window: entry.window)
+                bringWindowForward(pid: entry.pid, window: liveWindow)
             }
         } else if let pid = activateTopmostWindow(on: displayID) {
             log("    no entry; topmost-fallback activated \(appName(pid))")
         } else {
             log("    no entry and no topmost on display \(displayID)")
         }
+    }
+
+    private func resolveLiveWindow(pid: pid_t, on displayID: CGDirectDisplayID, hint: AXUIElement) -> AXUIElement {
+        // If the hint is still alive and on the right display, prefer it (preserves the
+        // user's exact click choice across crosses).
+        if isWindowAlive(hint), self.displayID(for: hint) == displayID, isUserWindow(hint) {
+            return hint
+        }
+        // Otherwise enumerate the app's current windows and pick whichever is on the target
+        // display. This handles cases where the app rebuilt its window list internally and
+        // our stored reference is stale or referring to a different window than what's
+        // currently visible.
+        let appEl = AXUIElementCreateApplication(pid)
+        var ref: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &ref) == .success,
+           let windows = ref as? [AXUIElement] {
+            for w in windows where isUserWindow(w) && self.displayID(for: w) == displayID {
+                return w
+            }
+        }
+        return hint
     }
 
     private func bringWindowForward(pid: pid_t, window: AXUIElement) {
