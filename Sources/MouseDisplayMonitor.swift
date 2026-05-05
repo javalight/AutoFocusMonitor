@@ -26,7 +26,6 @@ final class MouseDisplayMonitor {
     private func tick() {
         guard let id = currentMouseDisplayID() else { return }
         if id != lastDisplayID && lastDisplayID != 0 {
-            FileHandle.standardError.write(Data("[mma] cursor crossed: \(lastDisplayID) -> \(id)\n".utf8))
             lastDisplayID = id
             onCross(id)
         } else {
@@ -35,14 +34,13 @@ final class MouseDisplayMonitor {
     }
 
     private func currentMouseDisplayID() -> CGDirectDisplayID? {
-        let loc = NSEvent.mouseLocation // Cocoa coords (origin bottom-left, primary screen)
-        for screen in NSScreen.screens {
-            if NSPointInRect(loc, screen.frame) {
-                if let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
-                    return CGDirectDisplayID(num.uint32Value)
-                }
-            }
-        }
-        return nil
+        // Use CG coords (top-left origin) so cursor and window display lookups share
+        // the same CGDirectDisplayID namespace as CGGetDisplaysWithRect — important on
+        // setups with USB / DisplayLink monitors where NSScreen mapping can drift.
+        guard let cgLoc = CGEvent(source: nil)?.location else { return nil }
+        var displays = [CGDirectDisplayID](repeating: 0, count: 16)
+        var count: UInt32 = 0
+        let result = CGGetDisplaysWithPoint(cgLoc, 16, &displays, &count)
+        return (result == .success && count > 0) ? displays[0] : nil
     }
 }

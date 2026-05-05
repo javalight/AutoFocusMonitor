@@ -7,16 +7,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var focusTracker: FocusTracker!
     private var enabled = true
 
+    private let logPath = "/tmp/autofocusmonitor.log"
+
+    private func log(_ s: String) {
+        let line = "[\(Date())] \(s)\n"
+        if let data = line.data(using: .utf8) {
+            if let h = FileHandle(forWritingAtPath: logPath) {
+                h.seekToEndOfFile()
+                h.write(data)
+                try? h.close()
+            } else {
+                try? data.write(to: URL(fileURLWithPath: logPath))
+            }
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
-
-        FileHandle.standardError.write(Data("[mma] launched. AX trusted: \(AXIsProcessTrusted())\n".utf8))
+        log("launched. AX trusted at start: \(AXIsProcessTrusted())")
 
         if !ensureAccessibilityPermission() {
-            // First launch: prompt fired. Wait for user to grant, then re-check on a timer.
+            log("not trusted; polling for grant")
             let t = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
                 if AXIsProcessTrusted() {
                     timer.invalidate()
+                    self?.log("trust acquired via polling")
                     self?.startCore()
                 }
             }
@@ -24,11 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        log("trusted at launch; starting")
         startCore()
     }
 
     private func startCore() {
-        FileHandle.standardError.write(Data("[mma] startCore: trust=\(AXIsProcessTrusted())\n".utf8))
         focusTracker = FocusTracker()
         focusTracker.start()
 
@@ -49,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.title = "🖥"
-            button.toolTip = "AutoFocusMonitor"
+            button.toolTip = "AutoFocusMonitor — \(Self.buildStamp)"
         }
         let menu = NSMenu()
         let toggle = NSMenuItem(title: "Enabled", action: #selector(toggleEnabled), keyEquivalent: "")
@@ -57,9 +72,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggle.state = .on
         menu.addItem(toggle)
         menu.addItem(NSMenuItem.separator())
+        let buildItem = NSMenuItem(title: "Build: \(Self.buildStamp)", action: nil, keyEquivalent: "")
+        buildItem.isEnabled = false
+        menu.addItem(buildItem)
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
     }
+
+    private static let buildStamp: String = {
+        // Use the binary's modification time so each rebuild changes this string visibly.
+        guard let path = Bundle.main.executablePath,
+              let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let date = attrs[.modificationDate] as? Date else { return "unknown" }
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return f.string(from: date)
+    }()
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
         enabled.toggle()
