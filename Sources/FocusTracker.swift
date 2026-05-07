@@ -24,7 +24,7 @@ final class FocusTracker {
     // Ignore recordFocus from X for a short window so those knock-on events don't overwrite
     // entries that the user genuinely set by clicking.
     private var suppressUntil: [pid_t: Date] = [:]
-    private let suppressionDuration: TimeInterval = 0.5
+    private let suppressionDuration: TimeInterval = 0.1
 
     private let logPath = "/tmp/autofocusmonitor.log"
     private func log(_ s: String) {
