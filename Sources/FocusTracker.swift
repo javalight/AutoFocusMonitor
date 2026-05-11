@@ -219,6 +219,7 @@ final class FocusTracker {
     }
 
     private func bringWindowForward(pid: pid_t, window: AXUIElement) {
+        log("bringWindowForward \(appName(pid)):'\(windowTitle(window))'")
         suppressUntil[pid] = Date().addingTimeInterval(suppressionDuration)
         let appEl = AXUIElementCreateApplication(pid)
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
@@ -236,10 +237,20 @@ final class FocusTracker {
             // and we only pay the brief flash when the race goes the other way.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
                 guard let self = self,
-                      let actual = self.focusedWindow(of: pid),
-                      !CFEqual(actual, window) else { return }
+                      let actual = self.focusedWindow(of: pid) else { return }
+                if CFEqual(actual, window) {
+                    self.log("  100ms check OK: '\(self.windowTitle(actual))'")
+                    return
+                }
+                self.log("  100ms check MISMATCH: wanted='\(self.windowTitle(window))' got='\(self.windowTitle(actual))' — retrying")
                 self.applyMainWindowSetters(appEl: appEl, window: window)
                 AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
+                    if let final = self.focusedWindow(of: pid) {
+                        let ok = CFEqual(final, window)
+                        self.log("  final: \(ok ? "OK" : "STILL MISMATCH") '\(self.windowTitle(final))'")
+                    }
+                }
             }
         }
     }
